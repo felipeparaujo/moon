@@ -1133,7 +1133,10 @@ impl<'query> ActionGraphBuilder<'query> {
             if had_ignored_dependents {
                 child_reqs.skip_affected = false;
 
-                Box::pin(self.run_task_dependents(task, &child_reqs, state)).await?;
+                let dependents =
+                    Box::pin(self.run_task_dependents(task, &child_reqs, state)).await?;
+
+                self.link_dependent_requirements(index, dependents)?;
             }
 
             return Ok(Some(index));
@@ -1174,7 +1177,9 @@ impl<'query> ActionGraphBuilder<'query> {
         if should_run_dependents {
             child_reqs.skip_affected = false;
 
-            Box::pin(self.run_task_dependents(task, &child_reqs, state)).await?;
+            let dependents = Box::pin(self.run_task_dependents(task, &child_reqs, state)).await?;
+
+            self.link_dependent_requirements(index, dependents)?;
         } else {
             self.ignored_dependents.insert(task.target.clone());
         }
@@ -1500,6 +1505,22 @@ impl<'query> ActionGraphBuilder<'query> {
     ) -> miette::Result<()> {
         if let Some(edge) = edges.into_iter().flatten().next() {
             self.link_requirements(index, vec![edge])?;
+        }
+
+        Ok(())
+    }
+
+    fn link_dependent_requirements(
+        &mut self,
+        index: NodeIndex,
+        dependents: Vec<Option<NodeIndex>>,
+    ) -> miette::Result<()> {
+        // Dependency traversal normally creates these edges. However, when the
+        // upstream scope excludes a dependency, a downstream traversal may
+        // still select both tasks. Preserve their ordering without pulling any
+        // excluded upstream tasks into the graph.
+        for dependent in dependents.into_iter().flatten() {
+            self.link_requirements(dependent, vec![index])?;
         }
 
         Ok(())

@@ -1884,6 +1884,83 @@ mod action_graph_builder {
             async fn async_doesnt_mark_target_without_relations() {
                 assert!(run_only_downstream_target(true, false).await.is_empty());
             }
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn preserves_order_between_selected_downstream_tasks_when_upstream_is_none() {
+                let sandbox = create_sandbox("affected-starve");
+                let mut container = ActionGraphContainer::new(sandbox.path());
+
+                let wg = container.create_workspace_graph().await;
+                let mut builder = container.create_builder(wg.clone()).await;
+
+                builder.mock_affected(
+                    FxHashSet::from_iter([WorkspaceRelativePathBuf::from("mid/src.txt")]),
+                    |affected| {
+                        affected.set_scopes(UpstreamScope::None, DownstreamScope::Deep);
+                    },
+                );
+
+                // Insert the downstream task first to mirror the order from the
+                // issue reproduction and ensure its edge is restored when the
+                // changed dependency is visited later.
+                builder
+                    .run_tasks(
+                        ["top:build", "mid:build", "base:build"]
+                            .map(|target| TargetLocator::Qualified(Target::parse(target).unwrap())),
+                        RunRequirements {
+                            dependencies: UpstreamScope::None,
+                            dependents: DownstreamScope::Deep,
+                            include_relations: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+
+                let (_, graph) = builder.build();
+                let mut targets = graph
+                    .get_nodes()
+                    .into_iter()
+                    .filter_map(|node| match node {
+                        ActionNode::RunTask(inner) => Some(inner.target.to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                targets.sort();
+
+                assert_eq!(targets, ["mid:build", "mid:test", "top:build", "top:test"]);
+
+                let nodes = graph.get_inner_nodes();
+                let mid_index = nodes
+                    .iter()
+                    .find_map(|(index, node)| {
+                        matches!(
+                            node,
+                            ActionNode::RunTask(inner)
+                                if inner.target == Target::parse("mid:build").unwrap()
+                        )
+                        .then_some(*index)
+                    })
+                    .unwrap();
+                let top_index = nodes
+                    .iter()
+                    .find_map(|(index, node)| {
+                        matches!(
+                            node,
+                            ActionNode::RunTask(inner)
+                                if inner.target == Target::parse("top:build").unwrap()
+                        )
+                        .then_some(*index)
+                    })
+                    .unwrap();
+
+                assert!(
+                    graph
+                        .get_inner_graph()
+                        .find_edge(top_index, mid_index)
+                        .is_some()
+                );
+            }
         }
 
         mod run_in_ci {
