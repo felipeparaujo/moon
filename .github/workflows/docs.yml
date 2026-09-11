@@ -7,6 +7,7 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
+    if: ${{ github.repository == 'moonrepo/moon' }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
